@@ -12,9 +12,9 @@ concurrency:
 
 jobs:
   unpack:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Safely extract the archive
         env:
@@ -95,7 +95,12 @@ jobs:
             exit 0
           fi
           git commit -m "Unpack money-ready content factory"
-          git push
+          git push || {
+            echo "Не удалось отправить commit в main."
+            echo "Проверьте Settings → Actions → General → Workflow permissions → Read and write permissions."
+            echo "Также проверьте, что branch protection для main разрешает push от GitHub Actions."
+            exit 1
+          }
 
       - name: Show result
         run: |
