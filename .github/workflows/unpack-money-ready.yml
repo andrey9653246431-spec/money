@@ -80,9 +80,21 @@ jobs:
           test -f "$SOURCE/scripts/publish_telegram.py"
           test -f "$SOURCE/scripts/validate_content.py"
           test -f "$SOURCE/assets/fonts/Manrope-Variable.ttf"
+
+          # GITHUB_TOKEN cannot push changes to .github/workflows without a
+          # separate workflows permission. Keep those files as templates and
+          # let the repository owner install them through GitHub Web.
+          mkdir -p "$GITHUB_WORKSPACE/templates/github"
+          cp "$SOURCE/.github/workflows/publish.yml" "$GITHUB_WORKSPACE/templates/github/publish.yml"
+          if [ -f "$SOURCE/.github/workflows/ci.yml" ]; then
+            cp "$SOURCE/.github/workflows/ci.yml" "$GITHUB_WORKSPACE/templates/github/ci.yml"
+          fi
+          rm -f "$SOURCE/.github/workflows/"*.yml
+
           cp -a "$SOURCE"/. "$GITHUB_WORKSPACE"/
           rm -f money-ready.zip
           echo "Файлы скопированы из $SOURCE в корень репозитория"
+          echo "Workflow-шаблоны сохранены отдельно в templates/github"
 
       - name: Commit unpacked files
         run: |
@@ -104,6 +116,7 @@ jobs:
 
       - name: Show result
         run: |
-          test -f .github/workflows/publish.yml
+          test -f templates/github/publish.yml
           test -f content/examples/approved-example.json
-          echo "Готово: теперь откройте Actions → Publish approved Telegram content"
+          echo "Распаковка завершена."
+          echo "Теперь скопируйте templates/github/publish.yml в .github/workflows/publish.yml через GitHub Web."
