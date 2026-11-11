@@ -8,7 +8,7 @@ import scripts.publish_telegram as telegram_module
 from design_factory.brand import Brand
 from design_factory.models import load_posts
 from design_factory.renderer import render_post
-from scripts.publish_telegram import chunk_text, full_text, publish, state_path
+from scripts.publish_telegram import CHANNEL_FOOTER, chunk_text, full_text, publish, state_path
 from scripts.validate_content import validate_payload
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +35,8 @@ def test_text_and_chunks() -> None:
     text = full_text(payload["posts"][0])
     assert "#деньги" in text
     assert "Источники" not in text
+    assert text.endswith(CHANNEL_FOOTER)
+    assert text.count("https://t.me/ne_perepl") == 1
     long_text = "\n\n".join(f"Абзац {index} " + "текст " * 200 for index in range(10))
     chunks = chunk_text(long_text, limit=1000)
     assert len(chunks) > 1
@@ -112,6 +114,7 @@ def test_retry_does_not_duplicate_long_post(tmp_path: Path, monkeypatch) -> None
     assert publish(args) == 0
     assert len(client.photos) == 1
     assert len(client.messages) == 1
+    assert client.messages[0].endswith(CHANNEL_FOOTER)
     assert client.photos[0] == payload["posts"][1]["working_title"]
     assert len(list((tmp_path / "state").glob("*.json"))) == 1
     assert (tmp_path / "archive" / "2026-11-12_day.json").exists()
