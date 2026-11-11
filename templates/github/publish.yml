@@ -1,0 +1,120 @@
+name: Publish approved Telegram content
+
+on:
+  workflow_dispatch:
+    inputs:
+      slot:
+        description: "Слот публикации"
+        type: choice
+        required: true
+        options: [morning, day, evening]
+      content_date:
+        description: "Дата JSON, например 2026-11-12"
+        type: string
+        required: true
+      dry_run:
+        description: "Только проверить, не отправлять"
+        type: boolean
+        required: true
+        default: true
+  schedule:
+    - cron: "3 9 * * *"
+      timezone: "Europe/Moscow"
+    - cron: "3 13 * * *"
+      timezone: "Europe/Moscow"
+    - cron: "3 20 * * *"
+      timezone: "Europe/Moscow"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: telegram-production-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # Scheduled publishing stays off until the repository variable is explicitly enabled.
+    if: github.event_name == 'workflow_dispatch' || vars.PUBLISHING_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Select date and slot
+        id: context
+        env:
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          MANUAL_SLOT: ${{ inputs.slot }}
+          MANUAL_DATE: ${{ inputs.content_date }}
+        run: |
+          set -euo pipefail
+          case "${EVENT_SCHEDULE:-manual}" in
+            "3 9 * * *") SLOT=morning ;;
+            "3 13 * * *") SLOT=day ;;
+            "3 20 * * *") SLOT=evening ;;
+            manual) SLOT="$MANUAL_SLOT" ;;
+            *) echo "Unknown schedule: $EVENT_SCHEDULE"; exit 1 ;;
+          esac
+          DATE="${MANUAL_DATE:-$(TZ=Europe/Moscow date +%F)}"
+          case "$SLOT" in morning|day|evening) ;; *) echo "Bad slot"; exit 1 ;; esac
+          test -n "$DATE"
+          echo "slot=$SLOT" >> "$GITHUB_OUTPUT"
+          echo "date=$DATE" >> "$GITHUB_OUTPUT"
+
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e .
+
+      - name: Validate approved JSON
+        run: |
+          python scripts/validate_content.py \
+            --file "content/approved/${{ steps.context.outputs.date }}.json" \
+            --slot "${{ steps.context.outputs.slot }}" \
+            --require-approved
+
+      - name: Render cards
+        run: |
+          dbp-design build \
+            --input "content/approved/${{ steps.context.outputs.date }}.json" \
+            --out "dist/${{ steps.context.outputs.date }}"
+
+      - name: Publish one slot or dry-run
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+        run: |
+          python scripts/publish_telegram.py \
+            --content "content/approved/${{ steps.context.outputs.date }}.json" \
+            --slot "${{ steps.context.outputs.slot }}" \
+            --image-dir "dist/${{ steps.context.outputs.date }}" \
+            --state-dir state/telegram \
+            --archive-dir content/published \
+            --dry-run "$DRY_RUN"
+
+      - name: Commit publication state
+        if: success() && (github.event_name == 'schedule' || inputs.dry_run == false)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/telegram content/published
+          if git diff --cached --quiet; then
+            echo "No state changes"
+          else
+            git commit -m "[skip ci] Publish ${{ steps.context.outputs.date }} ${{ steps.context.outputs.slot }}"
+            git push
+          fi
+
+      - name: Keep audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-${{ steps.context.outputs.date }}-${{ steps.context.outputs.slot }}
+          path: |
+            dist/${{ steps.context.outputs.date }}/
+            state/telegram/
+          retention-days: 7
