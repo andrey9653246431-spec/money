@@ -1,4 +1,4 @@
-name: Unpack money-ready.zip
+name: publish.yml
 
 on:
   workflow_dispatch:
