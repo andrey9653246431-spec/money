@@ -1,122 +1,120 @@
-name: publish.yml
+name: Publish approved Telegram content
 
 on:
   workflow_dispatch:
+    inputs:
+      slot:
+        description: "Слот публикации"
+        type: choice
+        required: true
+        options: [morning, day, evening]
+      content_date:
+        description: "Дата JSON, например 2026-11-12"
+        type: string
+        required: true
+      dry_run:
+        description: "Только проверить, не отправлять"
+        type: boolean
+        required: true
+        default: true
+  schedule:
+    - cron: "3 9 * * *"
+      timezone: "Europe/Moscow"
+    - cron: "3 13 * * *"
+      timezone: "Europe/Moscow"
+    - cron: "3 20 * * *"
+      timezone: "Europe/Moscow"
 
 permissions:
   contents: write
 
 concurrency:
-  group: unpack-money-ready
+  group: telegram-production-publish
   cancel-in-progress: false
 
 jobs:
-  unpack:
+  publish:
+    # Scheduled publishing stays off until the repository variable is explicitly enabled.
+    if: github.event_name == 'workflow_dispatch' || vars.PUBLISHING_ENABLED == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
 
-      - name: Safely extract the archive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Select date and slot
+        id: context
         env:
-          ARCHIVE: money-ready.zip
-          STAGING: ${{ runner.temp }}/money-ready
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          MANUAL_SLOT: ${{ inputs.slot }}
+          MANUAL_DATE: ${{ inputs.content_date }}
         run: |
           set -euo pipefail
-          test -f "$ARCHIVE" || {
-            echo "Файл $ARCHIVE не найден в корне репозитория"
-            exit 1
-          }
-          export STAGING
-          python - <<'PY'
-          import os
-          import stat
-          import zipfile
-          from pathlib import Path
+          case "${EVENT_SCHEDULE:-manual}" in
+            "3 9 * * *") SLOT=morning ;;
+            "3 13 * * *") SLOT=day ;;
+            "3 20 * * *") SLOT=evening ;;
+            manual) SLOT="$MANUAL_SLOT" ;;
+            *) echo "Unknown schedule: $EVENT_SCHEDULE"; exit 1 ;;
+          esac
+          DATE="${MANUAL_DATE:-$(TZ=Europe/Moscow date +%F)}"
+          case "$SLOT" in morning|day|evening) ;; *) echo "Bad slot"; exit 1 ;; esac
+          test -n "$DATE"
+          echo "slot=$SLOT" >> "$GITHUB_OUTPUT"
+          echo "date=$DATE" >> "$GITHUB_OUTPUT"
 
-          archive = Path("money-ready.zip")
-          staging = Path(os.environ["STAGING"])
-          staging.mkdir(parents=True, exist_ok=True)
-          root = staging.resolve()
-          total_size = 0
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e .
 
-          with zipfile.ZipFile(archive) as package:
-              entries = package.infolist()
-              if len(entries) > 2000:
-                  raise SystemExit("Слишком много файлов в архиве")
-              for entry in entries:
-                  path = Path(entry.filename)
-                  if path.is_absolute() or ".." in path.parts:
-                      raise SystemExit(f"Небезопасный путь: {entry.filename}")
-                  if ".git" in path.parts or path.name == ".env":
-                      raise SystemExit(f"Запрещённый файл в архиве: {entry.filename}")
-                  mode = entry.external_attr >> 16
-                  if stat.S_ISLNK(mode):
-                      raise SystemExit(f"Симлинки запрещены: {entry.filename}")
-                  total_size += entry.file_size
-                  if total_size > 50 * 1024 * 1024:
-                      raise SystemExit("Распакованный архив больше 50 МБ")
-                  destination = (staging / path).resolve()
-                  if destination != root and root not in destination.parents:
-                      raise SystemExit(f"Путь выходит за staging: {entry.filename}")
-              package.extractall(staging)
-          print(f"Безопасно распаковано файлов: {len(entries)}")
-          PY
+      - name: Validate approved JSON
+        run: |
+          python scripts/validate_content.py \
+            --file "content/approved/${{ steps.context.outputs.date }}.json" \
+            --slot "${{ steps.context.outputs.slot }}" \
+            --require-approved
 
-      - name: Verify and copy to repository root
+      - name: Render cards
+        run: |
+          dbp-design build \
+            --input "content/approved/${{ steps.context.outputs.date }}.json" \
+            --out "dist/${{ steps.context.outputs.date }}"
+
+      - name: Publish one slot or dry-run
         env:
-          STAGING: ${{ runner.temp }}/money-ready
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
         run: |
-          set -euo pipefail
-          SOURCE="$STAGING"
-          if [ ! -f "$SOURCE/pyproject.toml" ]; then
-            PROJECT_FILE="$(find "$STAGING" -mindepth 2 -maxdepth 3 -name pyproject.toml -print -quit)"
-            test -n "$PROJECT_FILE" || {
-              echo "В архиве не найден pyproject.toml"
-              exit 1
-            }
-            SOURCE="$(dirname "$PROJECT_FILE")"
-          fi
-          test -f "$SOURCE/.github/workflows/publish.yml"
-          test -f "$SOURCE/scripts/publish_telegram.py"
-          test -f "$SOURCE/scripts/validate_content.py"
-          test -f "$SOURCE/assets/fonts/Manrope-Variable.ttf"
+          python scripts/publish_telegram.py \
+            --content "content/approved/${{ steps.context.outputs.date }}.json" \
+            --slot "${{ steps.context.outputs.slot }}" \
+            --image-dir "dist/${{ steps.context.outputs.date }}" \
+            --state-dir state/telegram \
+            --archive-dir content/published \
+            --dry-run "$DRY_RUN"
 
-          # GITHUB_TOKEN cannot push changes to .github/workflows without a
-          # separate workflows permission. Keep those files as templates and
-          # let the repository owner install them through GitHub Web.
-          mkdir -p "$GITHUB_WORKSPACE/templates/github"
-          cp "$SOURCE/.github/workflows/publish.yml" "$GITHUB_WORKSPACE/templates/github/publish.yml"
-          if [ -f "$SOURCE/.github/workflows/ci.yml" ]; then
-            cp "$SOURCE/.github/workflows/ci.yml" "$GITHUB_WORKSPACE/templates/github/ci.yml"
-          fi
-          rm -f "$SOURCE/.github/workflows/"*.yml
-
-          cp -a "$SOURCE"/. "$GITHUB_WORKSPACE"/
-          rm -f money-ready.zip
-          echo "Файлы скопированы из $SOURCE в корень репозитория"
-          echo "Workflow-шаблоны сохранены отдельно в templates/github"
-
-      - name: Commit unpacked files
+      - name: Commit publication state
+        if: success() && (github.event_name == 'schedule' || inputs.dry_run == false)
         run: |
-          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
+          git add state/telegram content/published
           if git diff --cached --quiet; then
-            echo "Нет изменений для commit"
-            exit 0
+            echo "No state changes"
+          else
+            git commit -m "[skip ci] Publish ${{ steps.context.outputs.date }} ${{ steps.context.outputs.slot }}"
+            git push
           fi
-          git commit -m "Unpack money-ready content factory"
-          git push || {
-            echo "Не удалось отправить commit в main."
-            echo "Проверьте Settings → Actions → General → Workflow permissions → Read and write permissions."
-            echo "Также проверьте, что branch protection для main разрешает push от GitHub Actions."
-            exit 1
-          }
 
-      - name: Show result
-        run: |
-          test -f templates/github/publish.yml
-          test -f content/examples/approved-example.json
-          echo "Распаковка завершена."
-          echo "Теперь скопируйте templates/github/publish.yml в .github/workflows/publish.yml через GitHub Web."
+      - name: Keep audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-${{ steps.context.outputs.date }}-${{ steps.context.outputs.slot }}
+          path: |
+            dist/${{ steps.context.outputs.date }}/
+            state/telegram/
+          retention-days: 7
