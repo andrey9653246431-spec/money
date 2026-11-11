@@ -19,6 +19,10 @@ except ImportError:  # Direct execution: python scripts/publish_telegram.py
     from validate_content import content_id, validate_payload
 
 
+CHANNEL_URL = "https://t.me/ne_perepl"
+CHANNEL_FOOTER = f"Не переплачивай @ne_perepl\n{CHANNEL_URL}"
+
+
 def as_bool(value: str | bool) -> bool:
     if isinstance(value, bool):
         return value
@@ -33,6 +37,8 @@ def full_text(post: dict) -> str:
         text += "\n\n" + " ".join("#" + tag for tag in dict.fromkeys(tags))
     if sources:
         text += "\n\nИсточники:\n" + "\n".join(sources)
+    if CHANNEL_URL not in text:
+        text += "\n\n" + CHANNEL_FOOTER
     return text
 
 
