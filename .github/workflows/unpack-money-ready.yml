@@ -1,0 +1,104 @@
+name: Unpack money-ready.zip
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: unpack-money-ready
+  cancel-in-progress: false
+
+jobs:
+  unpack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Safely extract the archive
+        env:
+          ARCHIVE: money-ready.zip
+          STAGING: ${{ runner.temp }}/money-ready
+        run: |
+          set -euo pipefail
+          test -f "$ARCHIVE" || {
+            echo "Файл $ARCHIVE не найден в корне репозитория"
+            exit 1
+          }
+          export STAGING
+          python - <<'PY'
+          import os
+          import stat
+          import zipfile
+          from pathlib import Path
+
+          archive = Path("money-ready.zip")
+          staging = Path(os.environ["STAGING"])
+          staging.mkdir(parents=True, exist_ok=True)
+          root = staging.resolve()
+          total_size = 0
+
+          with zipfile.ZipFile(archive) as package:
+              entries = package.infolist()
+              if len(entries) > 2000:
+                  raise SystemExit("Слишком много файлов в архиве")
+              for entry in entries:
+                  path = Path(entry.filename)
+                  if path.is_absolute() or ".." in path.parts:
+                      raise SystemExit(f"Небезопасный путь: {entry.filename}")
+                  if ".git" in path.parts or path.name == ".env":
+                      raise SystemExit(f"Запрещённый файл в архиве: {entry.filename}")
+                  mode = entry.external_attr >> 16
+                  if stat.S_ISLNK(mode):
+                      raise SystemExit(f"Симлинки запрещены: {entry.filename}")
+                  total_size += entry.file_size
+                  if total_size > 50 * 1024 * 1024:
+                      raise SystemExit("Распакованный архив больше 50 МБ")
+                  destination = (staging / path).resolve()
+                  if destination != root and root not in destination.parents:
+                      raise SystemExit(f"Путь выходит за staging: {entry.filename}")
+              package.extractall(staging)
+          print(f"Безопасно распаковано файлов: {len(entries)}")
+          PY
+
+      - name: Verify and copy to repository root
+        env:
+          STAGING: ${{ runner.temp }}/money-ready
+        run: |
+          set -euo pipefail
+          SOURCE="$STAGING"
+          if [ ! -f "$SOURCE/pyproject.toml" ]; then
+            PROJECT_FILE="$(find "$STAGING" -mindepth 2 -maxdepth 3 -name pyproject.toml -print -quit)"
+            test -n "$PROJECT_FILE" || {
+              echo "В архиве не найден pyproject.toml"
+              exit 1
+            }
+            SOURCE="$(dirname "$PROJECT_FILE")"
+          fi
+          test -f "$SOURCE/.github/workflows/publish.yml"
+          test -f "$SOURCE/scripts/publish_telegram.py"
+          test -f "$SOURCE/scripts/validate_content.py"
+          test -f "$SOURCE/assets/fonts/Manrope-Variable.ttf"
+          cp -a "$SOURCE"/. "$GITHUB_WORKSPACE"/
+          rm -f money-ready.zip
+          echo "Файлы скопированы из $SOURCE в корень репозитория"
+
+      - name: Commit unpacked files
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Нет изменений для commit"
+            exit 0
+          fi
+          git commit -m "Unpack money-ready content factory"
+          git push
+
+      - name: Show result
+        run: |
+          test -f .github/workflows/publish.yml
+          test -f content/examples/approved-example.json
+          echo "Готово: теперь откройте Actions → Publish approved Telegram content"
