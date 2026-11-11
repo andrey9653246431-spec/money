@@ -36,11 +36,11 @@ jobs:
   publish:
     # Scheduled publishing stays off until the repository variable is explicitly enabled.
     if: github.event_name == 'workflow_dispatch' || vars.PUBLISHING_ENABLED == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -68,6 +68,21 @@ jobs:
 
       - run: python -m pip install --upgrade pip
       - run: pip install -e .
+
+      - name: Generate approved JSON if missing
+        env:
+          CONTENT_FILE: content/approved/${{ steps.context.outputs.date }}.json
+          CONTENT_DATE: ${{ steps.context.outputs.date }}
+        run: |
+          set -euo pipefail
+          if [ -f "$CONTENT_FILE" ]; then
+            echo "Используем существующий редакционный файл: $CONTENT_FILE"
+          else
+            python scripts/generate_content.py \
+              --date "$CONTENT_DATE" \
+              --library content/generator/library.json \
+              --output "$CONTENT_FILE"
+          fi
 
       - name: Validate approved JSON
         run: |
@@ -101,7 +116,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add state/telegram content/published
+          git add state/telegram content/published \
+            "content/approved/${{ steps.context.outputs.date }}.json"
           if git diff --cached --quiet; then
             echo "No state changes"
           else
@@ -111,10 +127,11 @@ jobs:
 
       - name: Keep audit artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: telegram-${{ steps.context.outputs.date }}-${{ steps.context.outputs.slot }}
           path: |
             dist/${{ steps.context.outputs.date }}/
             state/telegram/
+            content/approved/${{ steps.context.outputs.date }}.json
           retention-days: 7
