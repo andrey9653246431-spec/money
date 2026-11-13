@@ -1,0 +1,98 @@
+{
+  "204727187": {
+    "query": "Пиво",
+    "offers": [
+      {
+        "store": "Дикси",
+        "store_id": "211590",
+        "name": "Безалкогольное пиво Clausthaler Lemon фильтрованное пастеризованное 500 мл",
+        "price": 100.0,
+        "original_price": 160.0,
+        "discount_percent": 38,
+        "unit_price": 200.0,
+        "unit": "л",
+        "volume": "500 мл",
+        "sku": "37882225",
+        "slug": "bezalkogol-noe-pivo-clausthaler-lemon-fil-trovannoe-pasterizovannoe-500-ml"
+      },
+      {
+        "store": "Магнит",
+        "store_id": "75848",
+        "name": "Пиво Калинкинъ Богемский пильзнер светлое фильтрованное пастеризованное 400 мл",
+        "price": 89.99,
+        "original_price": 89.99,
+        "discount_percent": 0,
+        "unit_price": 224.97,
+        "unit": "л",
+        "volume": "400 мл",
+        "sku": "46292823",
+        "slug": "pivo-kalinkin-bogemskiy-pil-zner-svetloe-fil-trovannoe-pasterizovannoe-400-ml"
+      },
+      {
+        "store": "Лента",
+        "store_id": "135401",
+        "name": "Пиво Grotwerg Weissebier светлое нефильтрованное пастеризованное 500 мл",
+        "price": 189.47,
+        "original_price": 189.47,
+        "discount_percent": 0,
+        "unit_price": 378.94,
+        "unit": "л",
+        "volume": "500 мл",
+        "sku": "21114242",
+        "slug": "pivo-grotwerg-weissebier-svetloe-nefil-trovannoe-pasterizovannoe-500-ml-f6ab898"
+      },
+      {
+        "store": "Перекрёсток",
+        "store_id": "25171",
+        "name": "Пиво OeTTINGER Pils светлое фильтрованное 500 мл",
+        "price": 189.99,
+        "original_price": 189.99,
+        "discount_percent": 0,
+        "unit_price": 379.98,
+        "unit": "л",
+        "volume": "500 мл",
+        "sku": "50257354",
+        "slug": "pivo-oettinger-pils-svetloe-fil-trovannoe-500-ml"
+      },
+      {
+        "store": "Пятёрочка",
+        "store_id": "42917",
+        "name": "Безалкогольное пиво Clausthaler Original светлое фильтрованное пастеризованное 330 мл",
+        "price": 144.99,
+        "original_price": 144.99,
+        "discount_percent": 0,
+        "unit_price": 439.36,
+        "unit": "л",
+        "volume": "330 мл",
+        "sku": "12642",
+        "slug": "bezalkogol-noe-pivo-clausthaler-original-svetloe-fil-trovannoe-pasterizovannoe-330-ml-11d58b3"
+      },
+      {
+        "store": "Метро",
+        "store_id": "3",
+        "name": "Пиво Brewdog Punk IPA светлое 500 мл",
+        "price": 299.9,
+        "original_price": 429.0,
+        "discount_percent": 30,
+        "unit_price": 599.8,
+        "unit": "л",
+        "volume": "500 мл",
+        "sku": "1475563",
+        "slug": "pivo-brewdog-punk-ipa-svetloe-500-ml-303a91e"
+      },
+      {
+        "store": "Ашан",
+        "store_id": "183",
+        "name": "Пиво Monchhof Landbier светлое фильтрованное 500 мл",
+        "price": 349.99,
+        "original_price": 349.99,
+        "discount_percent": 0,
+        "unit_price": 699.98,
+        "unit": "л",
+        "volume": "500 мл",
+        "sku": "15757611",
+        "slug": "pivo-monchhof-landbier-svetloe-fil-trovannoe-500-ml-fa8d9aa"
+      }
+    ]
+  }
+}
