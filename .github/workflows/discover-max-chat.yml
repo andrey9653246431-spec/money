@@ -1,0 +1,36 @@
+name: Discover MAX channel chat_id
+
+on:
+  workflow_dispatch:
+    inputs:
+      wait_seconds:
+        description: "Сколько секунд ждать событие добавления бота"
+        type: number
+        required: false
+        default: 180
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Russian Trusted CA for MAX API
+        run: |
+          set -euo pipefail
+          sudo curl -fsSL -o /usr/local/share/ca-certificates/russian_trusted_root_ca.crt \
+            https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt
+          sudo curl -fsSL -o /usr/local/share/ca-certificates/russian_trusted_sub_ca.crt \
+            https://gu-st.ru/content/lending/russian_trusted_sub_ca_pem.crt
+          sudo update-ca-certificates
+
+      - name: Wait for bot_added event
+        env:
+          MAX_BOT_TOKEN: ${{ secrets.MAX_BOT_TOKEN }}
+          WAIT_SECONDS: ${{ inputs.wait_seconds || 180 }}
+        run: |
+          set -euo pipefail
+          python scripts/discover_max_chat.py --timeout-seconds "$WAIT_SECONDS"
