@@ -29,6 +29,10 @@
 
 `manifest.json` связывает `content_id`, имя файла, размеры, alt-текст, AI-промпт и SHA-256. Публикационный сервис должен хранить `content_id + platform` как уникальный ключ, чтобы повторный запуск не создал дубль.
 
+## Публикация в MAX
+
+Тот же конвейер работает для мессенджера MAX: `scripts/publish_max.py` берёт `max_text`, загружает карточку через `POST /uploads?type=image` и отправляет пост через `POST /messages?chat_id=...` на `https://platform-api2.max.ru`. Отдельный workflow `.github/workflows/publish-max.yml` (09:08/13:08/20:08 МСК), отдельный state `state/max/`, анти-дубль и архив — как в Telegram. `chat_id` канала получается разово через `.github/workflows/discover-max-chat.yml` (Long Polling, событие `bot_added`). Полная пошаговая инструкция — `MAX_SETUP.md` в корне репозитория.
+
 ## Ручной визуальный checklist
 
 - заголовок читается на экране телефона;

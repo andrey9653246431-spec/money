@@ -1,0 +1,121 @@
+name: Unpack price-bot and MAX updates
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: unpack-updates
+  cancel-in-progress: false
+
+jobs:
+  unpack:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Safely extract archives
+        run: |
+          set -euo pipefail
+          export STAGING_ROOT="${{ runner.temp }}/updates"
+          mkdir -p "$STAGING_ROOT"
+          python - <<'PY'
+          import os
+          import stat
+          import zipfile
+          from pathlib import Path
+
+          staging_root = Path(os.environ["STAGING_ROOT"])
+          for archive_name in ("price-bot-update.zip", "max-update.zip"):
+              archive = Path(archive_name)
+              if not archive.exists():
+                  print(f"Пропуск: {archive_name} нет в репозитории")
+                  continue
+              staging = staging_root / archive.stem
+              staging.mkdir(parents=True, exist_ok=True)
+              root = staging.resolve()
+              total_size = 0
+              with zipfile.ZipFile(archive) as package:
+                  entries = package.infolist()
+                  if len(entries) > 2000:
+                      raise SystemExit("Слишком много файлов в архиве")
+                  for entry in entries:
+                      path = Path(entry.filename)
+                      if path.is_absolute() or ".." in path.parts:
+                          raise SystemExit(f"Небезопасный путь: {entry.filename}")
+                      if ".git" in path.parts or path.name == ".env":
+                          raise SystemExit(f"Запрещённый файл в архиве: {entry.filename}")
+                      mode = entry.external_attr >> 16
+                      if stat.S_ISLNK(mode):
+                          raise SystemExit(f"Симлинки запрещены: {entry.filename}")
+                      total_size += entry.file_size
+                      if total_size > 50 * 1024 * 1024:
+                          raise SystemExit("Распакованный архив больше 50 МБ")
+                      destination = (staging / path).resolve()
+                      if destination != root and root not in destination.parents:
+                          raise SystemExit(f"Путь выходит за staging: {entry.filename}")
+                  package.extractall(staging)
+              print(f"Безопасно распаковано {archive_name}: {len(entries)} файлов")
+          PY
+
+      - name: Verify and copy to repository root
+        env:
+          STAGING_ROOT: ${{ runner.temp }}/updates
+        run: |
+          set -euo pipefail
+          copy_archive() {
+            local name="$1" marker="$2"
+            local staging="$STAGING_ROOT/$name"
+            [ -d "$staging" ] || return 0
+            local source=""
+            if [ -f "$staging/$marker" ]; then
+              source="$staging"
+            else
+              local found
+              found="$(find "$staging" -mindepth 2 -maxdepth 3 -path "*/$marker" -print -quit)"
+              [ -n "$found" ] || { echo "В $name не найден маркер $marker"; exit 1; }
+              # marker вида price_bot/bot.py -> корень пакета на два уровня выше файла
+              source="$(dirname "$(dirname "$found")")"
+            fi
+            echo "Источник $name: $source"
+            # Workflow-файлы — через templates (GITHUB_TOKEN не может пушить в .github/workflows)
+            if [ -d "$source/.github/workflows" ]; then
+              mkdir -p "$GITHUB_WORKSPACE/templates/github"
+              for wf in "$source/.github/workflows/"*.yml; do
+                [ -e "$wf" ] || continue
+                cp "$wf" "$GITHUB_WORKSPACE/templates/github/"
+                echo "Шаблон workflow: templates/github/$(basename "$wf")"
+              done
+              rm -rf "$source/.github"
+            fi
+            cp -a "$source"/. "$GITHUB_WORKSPACE"/
+            rm -f "$name.zip"
+            echo "Файлы $name скопированы в корень репозитория"
+          }
+          copy_archive "price-bot-update" "price_bot/bot.py"
+          copy_archive "max-update" "scripts/publish_max.py"
+          test -f price_bot/bot.py || { echo "price_bot/bot.py не установлен"; exit 1; }
+          test -f scripts/publish_max.py || { echo "scripts/publish_max.py не установлен"; exit 1; }
+          test -f templates/github/price-bot.yml
+          test -f templates/github/publish-max.yml
+          echo "Распаковка завершена."
+
+      - name: Commit unpacked files
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Нет изменений для commit"
+            exit 0
+          fi
+          git commit -m "Unpack price-bot and MAX updates"
+          git push || {
+            echo "Не удалось отправить commit в main."
+            echo "Проверьте Settings → Actions → General → Workflow permissions → Read and write permissions."
+            echo "Также проверьте, что branch protection для main разрешает push от GitHub Actions."
+            exit 1
+          }
