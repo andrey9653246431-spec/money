@@ -6,11 +6,11 @@ install:
 check:
 	ruff check .
 	ruff format --check .
-	pytest
+	python -m pytest
 	dbp-design validate --input examples/posts.json
 
 test:
-	pytest
+	python -m pytest
 
 build:
 	dbp-design build --input examples/posts.json --out dist

@@ -19,7 +19,7 @@ dev = ["pytest>=8,<10", "ruff>=0.8,<1"]
 dbp-design = "design_factory.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["design_factory*", "scripts*"]
+include = ["design_factory*", "scripts*", "price_bot*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
