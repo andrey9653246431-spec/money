@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import signal
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -178,6 +179,7 @@ class PriceBot:
             "/basket — корзина\n"
             "/list — список покупок\n"
             "/stores — доступные магазины\n"
+            "/diag — самодиагностика (токен, Купер, скорость)\n"
             "/drug <название> — цены в аптеках (безрецептурные)\n"
             "/supp <название> — цены на БАДы в Купере\n"
             "/help — эта справка\n\n"
@@ -187,6 +189,41 @@ class PriceBot:
             "анонимно — вместо них показаны акции Купера.",
             main_menu(),
         )
+
+    def cmd_diag(self, chat_id: int) -> None:
+        """Самодиагностика: токен бота, доступность Купера, время ответа."""
+        lines = ["🩺 Диагностика", ""]
+        try:
+            me = self.api.call("getMe", {})
+            lines.append(f"Бот: @{me.get('username', '?')} (id={me.get('id', '?')})")
+        except RuntimeError as error:
+            lines.append(f"❌ Telegram: {error}")
+        started = time.monotonic()
+        try:
+            stores = self.kuper.stores()
+            lines.append(
+                f"✅ Купер: магазинов {len(stores)} из 10 ({time.monotonic() - started:.1f} с)"
+            )
+            lines.append("   " + ", ".join(s["name"] for s in stores))
+        except Exception as error:
+            lines.append(f"❌ Купер (магазины): {type(error).__name__}: {error}")
+            self.api.send_message(chat_id, "\n".join(lines))
+            return
+        started = time.monotonic()
+        try:
+            offers = self.kuper.search("молоко")
+            lines.append(
+                f"✅ Поиск «молоко»: {len(offers)} предложений ({time.monotonic() - started:.1f} с)"
+            )
+        except Exception as error:
+            lines.append(f"❌ Поиск: {type(error).__name__}: {error}")
+        lines.append("")
+        lines.append(f"Сессия: до {self.config.session_minutes} мин. в час.")
+        lines.append(
+            "Если между сессиями бот молчит — это ожидаемо: сообщение подхватится "
+            "в следующей сессии."
+        )
+        self.api.send_message(chat_id, "\n".join(lines))
 
     def cmd_stores(self, chat_id: int) -> None:
         try:
@@ -244,8 +281,14 @@ class PriceBot:
         self.api.send_message(chat_id, f"🔍 Ищу «{query}» по магазинам…")
         try:
             offers = self.kuper.search(query)
-        except RuntimeError as error:
-            self.api.send_message(chat_id, f"Поиск временно недоступен: {error}")
+        except Exception as error:  # бот обязан ответить, даже если упало неожиданно
+            traceback.print_exc()
+            print(f"SEARCH FAIL query={query!r} error={type(error).__name__}: {error}", flush=True)
+            self.api.send_message(
+                chat_id,
+                f"Поиск временно недоступен: {type(error).__name__}: {error}\n"
+                "Подробности записаны в лог сессии.",
+            )
             return
         self.last_search.save(user_id, query, [o.to_dict() for o in offers])
         if not offers:
@@ -448,6 +491,8 @@ class PriceBot:
             self.cmd_help(chat_id)
         elif text.startswith("/stores"):
             self.cmd_stores(chat_id)
+        elif text.startswith("/diag"):
+            self.cmd_diag(chat_id)
         elif text.startswith("/basket"):
             self.show_basket(chat_id, user_id)
         elif text.startswith("/list"):
@@ -585,6 +630,18 @@ class PriceBot:
         deadline = time.monotonic() + max(1, self.config.session_minutes) * 60
         offset = self.offsets.get()
 
+        # Кто именно отвечает: если username здесь не тот бот, которому пишет
+        # пользователь — дело в токене, а не в коде.
+        try:
+            me = self.api.call("getMe", {})
+            print(
+                f"Бот: @{me.get('username', '?')} (id={me.get('id', '?')}); "
+                f"координаты {self.config.lat},{self.config.lon}",
+                flush=True,
+            )
+        except RuntimeError as error:
+            print(f"WARN: getMe не удался: {error}", flush=True)
+
         # Отменённый workflow присылает SIGTERM: выходим из цикла штатно,
         # чтобы offset успел лечь в state/bot/ и апдейты не обработались дважды.
         stop = {"requested": False}
@@ -609,10 +666,27 @@ class PriceBot:
                 time.sleep(5)
                 continue
             for update in updates:
+                preview = ""
+                if "message" in update:
+                    preview = str((update["message"] or {}).get("text") or "")[:60]
+                elif "callback_query" in update:
+                    preview = "callback:" + str((update["callback_query"] or {}).get("data") or "")
+                print(f"UPDATE {update.get('update_id')}: {preview}", flush=True)
                 try:
                     self.handle_update(update)
                 except Exception as error:  # не роняем сессию из-за одного апдейта
-                    print(f"WARN: обработка апдейта: {error}")
+                    traceback.print_exc()
+                    print(f"WARN: обработка апдейта: {type(error).__name__}: {error}", flush=True)
+                    chat_id = ((update.get("message") or {}).get("chat") or {}).get("id")
+                    if chat_id:
+                        try:
+                            self.api.send_message(
+                                chat_id,
+                                f"Внутренняя ошибка при обработке запроса: "
+                                f"{type(error).__name__}. Попробуйте ещё раз.",
+                            )
+                        except RuntimeError:
+                            pass
                 offset = int(update.get("update_id", offset or 0)) + 1
             if updates:
                 self.offsets.set(offset)

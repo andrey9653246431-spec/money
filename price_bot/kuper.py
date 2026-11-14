@@ -189,7 +189,10 @@ class KuperProvider:
     def _warm(self) -> None:
         if self._warmed:
             return
-        self._session.get(f"{BASE}/?city_name=moscow", timeout=30)
+        try:
+            self._session.get(f"{BASE}/?city_name=moscow", timeout=15)
+        except Exception as error:  # антибот может рвать соединение — не молчим
+            raise RuntimeError(f"Купер: не удалось открыть сайт ({type(error).__name__})") from None
         self._warmed = True
 
     def stores(self) -> list[dict]:
@@ -201,9 +204,16 @@ class KuperProvider:
             f"{BASE}/api/v3/mweb/shelves?lat={self.lat}&lon={self.lon}"
             "&shelves_codes_to_exclude=alcohol"
         )
-        response = self._session.get(
-            url, headers={k: v for k, v in HEADERS.items() if k != "content-type"}, timeout=30
-        )
+        try:
+            response = self._session.get(
+                url,
+                headers={k: v for k, v in HEADERS.items() if k != "content-type"},
+                timeout=20,
+            )
+        except Exception as error:
+            raise RuntimeError(
+                f"Купер: сеть при запросе магазинов ({type(error).__name__})"
+            ) from None
         if response.status_code != 200:
             raise RuntimeError(f"Купер: список магазинов недоступен ({response.status_code})")
         data = response.json()
@@ -231,7 +241,7 @@ class KuperProvider:
                 f"{BASE}/api/web/v1/products",
                 data=json.dumps({"q": query, "store_id": store["id"]}),
                 headers=HEADERS,
-                timeout=30,
+                timeout=15,
             )
         except Exception:
             return None

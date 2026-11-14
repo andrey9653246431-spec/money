@@ -1,0 +1,59 @@
+name: Bot diagnostics
+
+# Ручная диагностика бота сравнения цен: тот ли это бот, нет ли вебхука,
+# доступен ли Купер из сети GitHub Actions и с какой скоростью.
+# Секреты в лог не попадают: печатаются только username/id бота.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bot-diagnostics
+  cancel-in-progress: false
+
+jobs:
+  diag:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r price_bot/requirements.txt
+
+      - name: Run diagnostics
+        env:
+          PRICE_BOT_TOKEN: ${{ secrets.PRICE_BOT_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          BOT_LAT: ${{ vars.BOT_LAT }}
+          BOT_LON: ${{ vars.BOT_LON }}
+          BOT_SESSION_MINUTES: ${{ vars.BOT_SESSION_MINUTES || 50 }}
+        run: python scripts/diag_bot.py
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Диагностика бота"
+            echo
+            echo "Смотрите шаги 1–5 в логе job **diag** — там вердикт по каждой проверке."
+            echo
+            echo "Как читать:"
+            echo "- **шаг 2**: username бота должен совпадать с тем, которому вы пишете;"
+            echo "- **шаг 3**: вебхук должен быть пустым, иначе getUpdates даёт 409 Conflict;"
+            echo "- **шаг 4**: если магазинов 0 или ошибка — Купер блокирует сеть GitHub;"
+            echo "- **шаг 5**: поиск «молоко» должен вернуть 5–8 предложений за 5–15 с."
+          } >> "$GITHUB_STEP_SUMMARY"
