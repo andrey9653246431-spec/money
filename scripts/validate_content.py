@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-SLOTS = {"morning", "day", "evening"}
+SLOTS = {"morning", "day", "evening", "promo"}
 REQUIRED_GATE = {
     "facts_checked",
     "style_cleaned",
@@ -63,7 +63,7 @@ def validate_payload(
         cid = content_id(post, str(date), index)
         prefix = f"{cid}"
         if post_slot not in SLOTS:
-            errors.append(f"{prefix}: slot должен быть morning/day/evening")
+            errors.append(f"{prefix}: slot должен быть morning/day/evening/promo")
         elif post_slot in seen_slots:
             errors.append(f"{prefix}: слот {post_slot} повторяется")
         else:
@@ -123,7 +123,12 @@ def validate_payload(
             and post.get("manual_review_required") is not True
         ):
             errors.append(f"{prefix}: для финансовой темы manual_review_required=true обязателен")
-        limits = {"morning": (250, 500), "day": (700, 1200), "evening": (450, 800)}
+        limits = {
+            "morning": (250, 500),
+            "day": (700, 1200),
+            "evening": (450, 800),
+            "promo": (300, 1000),
+        }
         if post_slot in limits:
             low, high = limits[post_slot]
             if "гороскоп" in str(post.get("rubric", "")).casefold():

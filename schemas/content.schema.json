@@ -15,7 +15,7 @@
         "required": ["slot", "rubric", "card"],
         "properties": {
           "content_id": {"type": "string"},
-          "slot": {"enum": ["morning", "day", "evening"]},
+          "slot": {"enum": ["morning", "day", "evening", "promo"]},
           "rubric": {"type": "string", "minLength": 1},
           "working_title": {"type": "string"},
           "card": {

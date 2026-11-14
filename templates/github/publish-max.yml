@@ -7,7 +7,7 @@ on:
         description: "Слот публикации"
         type: choice
         required: true
-        options: [morning, day, evening]
+        options: [morning, day, evening, promo]
       content_date:
         description: "Дата JSON, например 2026-11-12"
         type: string
@@ -24,6 +24,8 @@ on:
     - cron: "8 13 * * *"
       timezone: "Europe/Moscow"
     - cron: "8 20 * * *"
+      timezone: "Europe/Moscow"
+    - cron: "8 12 * * *"
       timezone: "Europe/Moscow"
 
 permissions:
@@ -67,11 +69,12 @@ jobs:
             "8 9 * * *") SLOT=morning ;;
             "8 13 * * *") SLOT=day ;;
             "8 20 * * *") SLOT=evening ;;
+            "8 12 * * *") SLOT=promo ;;
             manual) SLOT="$MANUAL_SLOT" ;;
             *) echo "Unknown schedule: $EVENT_SCHEDULE"; exit 1 ;;
           esac
           DATE="${MANUAL_DATE:-$(TZ=Europe/Moscow date +%F)}"
-          case "$SLOT" in morning|day|evening) ;; *) echo "Bad slot"; exit 1 ;; esac
+          case "$SLOT" in morning|day|evening|promo) ;; *) echo "Bad slot"; exit 1 ;; esac
           test -n "$DATE"
           echo "slot=$SLOT" >> "$GITHUB_OUTPUT"
           echo "date=$DATE" >> "$GITHUB_OUTPUT"

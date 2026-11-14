@@ -287,7 +287,7 @@ def publish(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--content", type=Path, required=True)
-    parser.add_argument("--slot", choices=["morning", "day", "evening"], required=True)
+    parser.add_argument("--slot", choices=["morning", "day", "evening", "promo"], required=True)
     parser.add_argument("--image-dir", type=Path, required=True)
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--archive-dir", type=Path, required=True)

@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-ALLOWED_SLOTS = {"morning", "day", "evening"}
+ALLOWED_SLOTS = {"morning", "day", "evening", "promo"}
 
 
 class ContentError(ValueError):
@@ -52,7 +52,7 @@ def parse_post(raw: dict[str, Any], date: str, index: int) -> Post:
         raise ContentError(f"posts[{index}]: ожидался объект")
     slot = _text(raw.get("slot"), f"posts[{index}].slot", required=True)
     if slot not in ALLOWED_SLOTS:
-        raise ContentError(f"posts[{index}].slot: допустимы morning, day, evening")
+        raise ContentError(f"posts[{index}].slot: допустимы morning, day, evening, promo")
     rubric = _text(raw.get("rubric"), f"posts[{index}].rubric", required=True)
     card_raw = raw.get("card") or {}
     if not isinstance(card_raw, dict):

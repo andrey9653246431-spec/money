@@ -29,7 +29,7 @@ def test_generator_creates_valid_renderable_day(tmp_path: Path) -> None:
     errors, warnings = validate_payload(payload, None, require_approved=True)
     assert errors == []
     assert warnings == []
-    assert [post["slot"] for post in payload["posts"]] == ["morning", "day", "evening"]
+    assert [post["slot"] for post in payload["posts"]] == ["morning", "day", "evening", "promo"]
     assert all(CHANNEL_FOOTER not in post["telegram_text"] for post in payload["posts"])
     assert all(full_text(post).endswith(CHANNEL_FOOTER) for post in payload["posts"])
     brand = Brand(ROOT)
@@ -53,7 +53,12 @@ def test_generation_is_deterministic_and_does_not_overwrite(tmp_path: Path) -> N
 
 def test_every_library_variant_meets_length_and_content_rules() -> None:
     library = load_library(LIBRARY)
-    limits = {"morning": (250, 500), "day": (700, 1200), "evening": (450, 800)}
+    limits = {
+        "morning": (250, 500),
+        "day": (700, 1200),
+        "evening": (450, 800),
+        "promo": (300, 1000),
+    }
     for topic in library["topics"]:
         for variant in range(len(topic["openings"]) * len(topic["closings"])):
             text = compose_text(topic, variant)
@@ -66,7 +71,7 @@ def test_every_library_variant_meets_length_and_content_rules() -> None:
 
 def test_history_prevents_exact_repeats_until_pool_is_used(tmp_path: Path) -> None:
     library = load_library(LIBRARY)
-    seen = {"morning": set(), "day": set(), "evening": set()}
+    seen = {"morning": set(), "day": set(), "evening": set(), "promo": set()}
     start = date(2026, 11, 13)
     for offset in range(30):
         current = start + timedelta(days=offset)
@@ -85,3 +90,17 @@ def test_sunday_uses_only_disclaimed_horoscope(tmp_path: Path) -> None:
     assert "гороскоп" in evening["rubric"].casefold()
     assert "Развлекательный формат, а не финансовая рекомендация" in evening["telegram_text"]
     assert "инвестиц" not in evening["telegram_text"].casefold()
+
+
+def test_promo_rubrics_rotate_daily_and_publish_at_noon(tmp_path: Path) -> None:
+    from scripts.generate_content import PROMO_RUBRICS, PUBLISH_TIMES
+
+    library = load_library(LIBRARY)
+    start = date(2026, 11, 16)
+    rubrics = []
+    for offset in range(5):
+        payload = generate_payload(library, start + timedelta(days=offset), tmp_path)
+        promo = next(post for post in payload["posts"] if post["slot"] == "promo")
+        assert promo["publish_time"] == "12:00" == PUBLISH_TIMES["promo"]
+        rubrics.append(promo["rubric"])
+    assert sorted(rubrics) == sorted(PROMO_RUBRICS)

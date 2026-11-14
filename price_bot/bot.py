@@ -3,17 +3,21 @@ from __future__ import annotations
 import json
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 try:
+    from . import pharmacy, supplements
     from .config import Config
     from .edadil import EdadilProvider
     from .kuper import TOP10, KuperProvider, Offer
     from .mailer import send_email
     from .store import BasketStore, LastSearchStore, OffsetStore, basket_totals, grand_total
 except ImportError:  # Direct execution: python price_bot/bot.py
+    import pharmacy
+    import supplements
     from config import Config
     from edadil import EdadilProvider
     from kuper import TOP10, KuperProvider, Offer
@@ -150,6 +154,9 @@ class PriceBot:
         self.baskets = BasketStore(state / "baskets.json")
         self.last_search = LastSearchStore(state / "last_search.json")
         self.offsets = OffsetStore(state / "offset.json")
+        self.pharmacy_path = (
+            Path(__file__).resolve().parent.parent / "data" / "pharmacy" / "prices.csv"
+        )
 
     # ---------- команды ----------
 
@@ -170,6 +177,8 @@ class PriceBot:
             "/basket — корзина\n"
             "/list — список покупок\n"
             "/stores — доступные магазины\n"
+            "/drug <название> — цены в аптеках (безрецептурные)\n"
+            "/supp <название> — цены на БАДы в Купере\n"
             "/help — эта справка\n\n"
             "Цены берутся из Купера (живые цены и акции). Покрытие сетей зависит "
             "от точки доставки — бот честно показывает, какие магазины доступны.\n"
@@ -191,6 +200,38 @@ class PriceBot:
         if missing:
             text += "\n\nНедоступны в этой точке: " + ", ".join(missing)
         self.api.send_message(chat_id, text, main_menu())
+
+    def cmd_drug(self, chat_id: int, query: str) -> None:
+        query = " ".join(query.split())[:100]
+        if not query:
+            self.api.send_message(
+                chat_id, "Напишите название препарата, например: /drug парацетамол"
+            )
+            return
+        offers = pharmacy.load_offers(self.pharmacy_path)
+        if not offers:
+            self.api.send_message(
+                chat_id,
+                "Прайс аптек пока не загружен. Цены появятся после обновления "
+                "data/pharmacy/prices.csv.",
+                main_menu(),
+            )
+            return
+        found = pharmacy.search(offers, query)
+        self.api.send_message(chat_id, pharmacy.format_results(query, found), main_menu())
+
+    def cmd_supp(self, chat_id: int, query: str) -> None:
+        query = " ".join(query.split())[:100]
+        if not query:
+            self.api.send_message(chat_id, "Напишите название БАДа, например: /supp омега-3")
+            return
+        self.api.send_message(chat_id, f"🔍 Ищу БАД «{query}» по магазинам…")
+        try:
+            offers = supplements.search_supplements(self.kuper, query)
+        except Exception as error:  # сетевые сбои не должны ронять бота
+            self.api.send_message(chat_id, f"Поиск БАДов временно недоступен: {error}")
+            return
+        self.api.send_message(chat_id, supplements.format_supplements(query, offers), main_menu())
 
     # ---------- поиск ----------
 
@@ -410,6 +451,10 @@ class PriceBot:
             self.show_basket(chat_id, user_id)
         elif text.startswith("/list"):
             self.show_list(chat_id, user_id)
+        elif text.startswith("/supp"):
+            self.cmd_supp(chat_id, text[len("/supp") :].strip())
+        elif text.startswith("/drug"):
+            self.cmd_drug(chat_id, text[len("/drug") :].strip())
         elif text.startswith("/search"):
             self.do_search(chat_id, user_id, text[len("/search") :].strip())
         elif text.startswith("/"):

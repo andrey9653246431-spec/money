@@ -15,13 +15,16 @@ try:
 except ImportError:  # Direct execution: python scripts/generate_content.py
     from validate_content import validate_payload
 
-SLOTS = ("morning", "day", "evening")
-PUBLISH_TIMES = {"morning": "09:00", "day": "13:00", "evening": "20:00"}
+SLOTS = ("morning", "day", "evening", "promo")
+PUBLISH_TIMES = {"morning": "09:00", "day": "13:00", "evening": "20:00", "promo": "12:00"}
 RUBRICS = {
     "morning": "Утро без тревоги",
     "day": "Деньги и жизнь",
     "evening": "Спокойный вечер",
+    "promo": "Бот и находки",
 }
+# Рубрики промо-слота 12:00 идут по кругу: каждый день следующая из пяти.
+PROMO_RUBRICS = ("Быстрая находка", "Сравнение", "Чек-лист", "Разбор", "Интерактив")
 GENERATOR_NAME = "dbp-offline-editorial-generator"
 QUALITY_GATE = {
     "facts_checked": True,
@@ -96,6 +99,9 @@ def eligible_topics(library: dict[str, Any], slot: str, content_date: date_type)
     if slot == "evening":
         wants_horoscope = content_date.weekday() == 6
         topics = [topic for topic in topics if is_horoscope(topic) == wants_horoscope]
+    if slot == "promo":
+        rubric = PROMO_RUBRICS[content_date.toordinal() % len(PROMO_RUBRICS)]
+        topics = [topic for topic in topics if topic.get("rubric") == rubric]
     return topics
 
 
