@@ -36,30 +36,6 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: pip install -r price_bot/requirements.txt
 
-      - name: Check state key
-        env:
-          BOT_STATE_KEY: ${{ secrets.BOT_STATE_KEY }}
-        run: |
-          # Без ключа состояние нельзя сохранить зашифрованным — не запускаем бота.
-          if [ -z "$BOT_STATE_KEY" ]; then
-            echo "Secret BOT_STATE_KEY не задан. Бот не запущен, чтобы не хранить данные открыто."
-            exit 1
-          fi
-
-      - name: Restore encrypted bot state
-        env:
-          BOT_STATE_KEY: ${{ secrets.BOT_STATE_KEY }}
-        run: |
-          set -euo pipefail
-          mkdir -p state/bot
-          if [ -f state/bot/state.enc ]; then
-            openssl enc -d -aes-256-cbc -pbkdf2 -pass env:BOT_STATE_KEY \
-              -in state/bot/state.enc | tar -xzf - -C state/bot
-            echo "Состояние восстановлено из state/bot/state.enc"
-          else
-            echo "Зашифрованного состояния пока нет — стартуем с пустого."
-          fi
-
       - name: Run bot session
         env:
           PRICE_BOT_TOKEN: ${{ secrets.PRICE_BOT_TOKEN }}
@@ -75,34 +51,15 @@ jobs:
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
         run: python -m price_bot.bot
 
-      - name: Encrypt bot state and remove plaintext
-        if: always()
-        env:
-          BOT_STATE_KEY: ${{ secrets.BOT_STATE_KEY }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          files=(state/bot/*.json)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "Нет файлов состояния для шифрования"
-          else
-            tar -czf - -C state/bot $(for f in "${files[@]}"; do basename "$f"; done) \
-              | openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:BOT_STATE_KEY -out state/bot/state.enc
-          fi
-          rm -f state/bot/*.json
-
-      - name: Commit encrypted bot state
+      - name: Commit bot state
         if: always()
         run: |
-          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # Открытые JSON больше не отслеживаются: удаляем их из индекса, если были закоммичены раньше.
-          git rm --cached --ignore-unmatch -q state/bot/*.json || true
-          git add state/bot/state.enc
+          git add state/bot
           if git diff --cached --quiet; then
             echo "No state changes"
           else
-            git commit -m "[skip ci] Price bot encrypted state"
+            git commit -m "[skip ci] Price bot state"
             git push || (git pull --rebase origin main && git push)
           fi
