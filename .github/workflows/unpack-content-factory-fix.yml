@@ -1,0 +1,213 @@
+name: Unpack content factory fix
+
+# Распаковывает content-factory-fix.zip в корень репозитория, применяет правки,
+# прогоняет тесты, коммитит и удаляет архив.
+#
+# Про workflow-файлы: GITHUB_TOKEN не может создавать и изменять файлы в
+# .github/workflows/. Поэтому есть два режима:
+#   * direct    — если задан секрет WORKFLOW_PAT (fine-grained token с правами
+#                 Contents: Read and write + Workflows: Read and write):
+#                 все 5 файлов workflow ставятся на место автоматически;
+#   * templates — если PAT нет: workflow-файлы кладутся в templates/github/,
+#                 а 5 файлов нужно перенести в .github/workflows/ вручную
+#                 через веб-интерфейс (список печатается в конце).
+
+on:
+  workflow_dispatch:
+    inputs:
+      archive:
+        description: "Имя архива в корне репозитория"
+        type: string
+        required: false
+        default: "content-factory-fix.zip"
+      delete_archive:
+        description: "Удалить архив из репозитория после распаковки"
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: unpack-content-factory-fix
+  cancel-in-progress: false
+
+jobs:
+  unpack:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      ARCHIVE: ${{ inputs.archive || 'content-factory-fix.zip' }}
+      DELETE_ARCHIVE: ${{ inputs.delete_archive == false && 'false' || 'true' }}
+      # direct — PAT есть, templates — PAT нет
+      MODE: ${{ secrets.WORKFLOW_PAT != '' && 'direct' || 'templates' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # С PAT push workflow-файлов разрешён, без него — нет.
+          token: ${{ secrets.WORKFLOW_PAT || github.token }}
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Check archive exists
+        run: |
+          set -euo pipefail
+          if [ ! -f "$ARCHIVE" ]; then
+            echo "::error::Файл $ARCHIVE не найден в корне репозитория. Загрузите архив (Add file → Upload files) в корень репозитория."
+            exit 1
+          fi
+          echo "Архив: $ARCHIVE ($(du -h "$ARCHIVE" | cut -f1)); режим: $MODE"
+
+      - name: Safely extract archive
+        env:
+          STAGING: ${{ runner.temp }}/fix
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import stat
+          import zipfile
+          from pathlib import Path
+
+          archive = Path(os.environ["ARCHIVE"])
+          staging = Path(os.environ["STAGING"])
+          staging.mkdir(parents=True, exist_ok=True)
+          root = staging.resolve()
+          total_size = 0
+
+          with zipfile.ZipFile(archive) as package:
+              entries = package.infolist()
+              if len(entries) > 500:
+                  raise SystemExit("Слишком много файлов в архиве")
+              for entry in entries:
+                  path = Path(entry.filename)
+                  if path.is_absolute() or ".." in path.parts:
+                      raise SystemExit(f"Небезопасный путь: {entry.filename}")
+                  if ".git" in path.parts or path.name == ".env":
+                      raise SystemExit(f"Запрещённый файл в архиве: {entry.filename}")
+                  mode = entry.external_attr >> 16
+                  if stat.S_ISLNK(mode):
+                      raise SystemExit(f"Симлинки запрещены: {entry.filename}")
+                  total_size += entry.file_size
+                  if total_size > 20 * 1024 * 1024:
+                      raise SystemExit("Распакованный архив больше 20 МБ")
+                  destination = (staging / path).resolve()
+                  if destination != root and root not in destination.parents:
+                      raise SystemExit(f"Путь выходит за staging: {entry.filename}")
+              package.extractall(staging)
+          print(f"Распаковано файлов: {len(entries)}")
+          PY
+          find "$STAGING" -type f | sed "s|$STAGING/||" | sort
+
+      - name: Apply files
+        env:
+          STAGING: ${{ runner.temp }}/fix
+        run: |
+          set -euo pipefail
+          # 1. Всё, кроме .github/workflows/, — прямо в корень репозитория.
+          # tar, а не rsync: не зависим от пакетов на раннере.
+          tar -cf - --exclude=.github/workflows -C "$STAGING" . \
+            | tar -xf - -C "$GITHUB_WORKSPACE"
+
+          # 2. Удаляем мёртвый дубль распаковщика в корне.
+          rm -f "$GITHUB_WORKSPACE/unpack-updates.yml"
+
+          # 3. Workflow-файлы: на место или в шаблоны — зависит от режима.
+          mkdir -p "$GITHUB_WORKSPACE/templates/github" "$GITHUB_WORKSPACE/.github/workflows"
+          if [ -d "$STAGING/.github/workflows" ]; then
+            for wf in "$STAGING/.github/workflows/"*.yml; do
+              [ -e "$wf" ] || continue
+              cp "$wf" "$GITHUB_WORKSPACE/templates/github/$(basename "$wf")"
+              if [ "$MODE" = "direct" ]; then
+                cp "$wf" "$GITHUB_WORKSPACE/.github/workflows/$(basename "$wf")"
+                echo "Установлен workflow: .github/workflows/$(basename "$wf")"
+              fi
+            done
+          fi
+
+          if [ "$MODE" != "direct" ]; then
+            echo "::warning::WORKFLOW_PAT не задан — workflow-файлы положены в templates/github/ и НЕ применены. Их нужно перенести в .github/workflows/ вручную (список ниже)."
+          fi
+
+      - name: Verify code before commit
+        run: |
+          set -euo pipefail
+          # Пакет приезжает снаружи: не пушим в main, пока тесты не зелёные.
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          ruff check .
+          ruff format --check .
+          pytest -q
+
+      - name: Remove archive
+        if: env.DELETE_ARCHIVE == 'true'
+        run: |
+          set -euo pipefail
+          rm -f "$ARCHIVE"
+          echo "Архив $ARCHIVE удалён из рабочей копии и будет удалён из репозитория коммитом"
+
+      - name: Commit and push
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Нет изменений для commit"
+            exit 0
+          fi
+          git commit -m "Apply content factory fix (reliability, CI, publish guards)"
+          for attempt in 1 2 3; do
+            if git push; then
+              echo "Изменения отправлены в main (попытка $attempt)"
+              exit 0
+            fi
+            echo "::warning::push не прошёл (попытка $attempt), подтягиваю main"
+            git pull --rebase --autostash origin main || true
+            sleep $((attempt * 5))
+          done
+          echo "::error::Не удалось отправить изменения в main. Проверьте Settings → Actions → General → Workflow permissions → Read and write permissions."
+          exit 1
+
+      - name: Summary
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "## Распаковка завершена"
+            echo
+            echo "- архив: \`$ARCHIVE\`"
+            echo "- режим: **$MODE**"
+            echo "- архив удалён из репозитория: **$DELETE_ARCHIVE**"
+            echo
+            if [ "$MODE" = "direct" ]; then
+              echo "Все 5 файлов workflow установлены в \`.github/workflows/\`."
+            else
+              echo "### Осталось вручную (5 файлов)"
+              echo
+              echo "\`WORKFLOW_PAT\` не задан, поэтому workflow-файлы лежат в \`templates/github/\`."
+              echo "Перенесите их в \`.github/workflows/\` через веб-интерфейс (Edit → вставить содержимое из шаблона):"
+              echo
+              echo '```text'
+              echo "templates/github/price-bot.yml     → .github/workflows/price-bot.yml"
+              echo "templates/github/publish.yml       → .github/workflows/publish.yml"
+              echo "templates/github/publish-max.yml   → .github/workflows/publish-max.yml"
+              echo "templates/github/unpack-updates.yml → .github/workflows/unpack-updates.yml"
+              echo "templates/github/ci.yml            → .github/workflows/ci.yml  (новый файл)"
+              echo '```'
+              echo
+              echo "Либо добавьте секрет \`WORKFLOW_PAT\` и запустите этот workflow повторно — тогда всё встанет само."
+            fi
+            echo
+            echo "### Дальше"
+            echo
+            echo "1. Settings → Secrets and variables → Actions → Variables: \`PRICE_BOT_ENABLED = true\` (и \`MAX_PUBLISHING_ENABLED = true\`, если нужен MAX)."
+            echo "2. Actions → Price comparison bot → Run workflow, \`session_minutes: 5\` — проверить шаги Restore/Encrypt/Commit."
+            echo "3. Actions → Publish approved Telegram content → Run workflow, \`dry_run: true\` — проверить строку DRY RUN."
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$GITHUB_STEP_SUMMARY"
