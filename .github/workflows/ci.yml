@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: pytest
+
+      # Фабрика: проверяем, что карточки и аватар собираются.
+      - run: dbp-design validate --input examples/posts.json
+      - run: dbp-design build --input examples/posts.json --out dist
+      - run: dbp-design build --input examples/horoscope.json --out dist/horoscope
+      - run: dbp-design avatar --out dist/avatar.png
+
+      # Контент-завод: валидация + сухой прогон публикатора без обращения к API.
+      - run: python scripts/validate_content.py --file content/examples/approved-example.json --slot morning --require-approved
+      - run: dbp-design build --input content/examples/approved-example.json --out dist/approved-example
+      - run: |
+          python scripts/publish_telegram.py \
+            --content content/examples/approved-example.json \
+            --slot morning \
+            --image-dir dist/approved-example \
+            --state-dir dist/test-state \
+            --archive-dir dist/test-archive \
+            --dry-run true
+
+      - if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v7
+        with:
+          name: design-previews
+          if-no-files-found: ignore
+          path: dist/
+          retention-days: 7
