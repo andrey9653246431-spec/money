@@ -29,23 +29,77 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - run: python -m pip install --upgrade pip
-      - run: pip install -e ".[dev]"
+      - name: Show environment
+        run: |
+          set -euo pipefail
+          echo "python: $(python -V 2>&1)"
+          echo "pip:    $(python -m pip -V)"
+          echo "commit: $(git rev-parse --short HEAD)"
 
-      - run: ruff check .
-      - run: ruff format --check .
-      - run: pytest
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          echo "--- установлено ---"
+          pip list 2>/dev/null | grep -Ei "^(pillow|pytest|ruff|dbp-design-factory) " || true
+
+      - name: Lint (ruff check)
+        run: |
+          set -euo pipefail
+          ruff check . || {
+            echo "::error title=ruff check::${{ matrix.python-version }}: ruff нашёл замечания — смотрите вывод шага."
+            exit 1
+          }
+
+      - name: Format check (ruff format --check)
+        run: |
+          set -euo pipefail
+          ruff format --check . || {
+            echo "::error title=ruff format::${{ matrix.python-version }}: файлы не отформатированы — смотрите список выше."
+            exit 1
+          }
+
+      # ВАЖНО: именно `python -m pytest`, а не `pytest`.
+      # Голый `pytest` не добавляет корень репозитория в sys.path, и тесты,
+      # импортирующие price_bot, падают на сборке (ModuleNotFoundError).
+      - name: Tests (pytest)
+        run: |
+          set -uo pipefail
+          python -m pytest -q -ra --maxfail=5 2>&1 | tee pytest.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            {
+              echo "### pytest упал (код $status), Python ${{ matrix.python-version }}"
+              echo
+              echo '```text'
+              tail -n 40 pytest.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=pytest::${{ matrix.python-version }}: тесты не прошли (код $status). Подробности — в Summary запуска, раздел с этим job."
+            exit 1
+          fi
 
       # Фабрика: проверяем, что карточки и аватар собираются.
-      - run: dbp-design validate --input examples/posts.json
-      - run: dbp-design build --input examples/posts.json --out dist
-      - run: dbp-design build --input examples/horoscope.json --out dist/horoscope
-      - run: dbp-design avatar --out dist/avatar.png
+      - name: Render factory examples
+        run: |
+          set -euo pipefail
+          dbp-design validate --input examples/posts.json
+          dbp-design build --input examples/posts.json --out dist
+          dbp-design build --input examples/horoscope.json --out dist/horoscope
+          dbp-design avatar --out dist/avatar.png
 
       # Контент-завод: валидация + сухой прогон публикатора без обращения к API.
-      - run: python scripts/validate_content.py --file content/examples/approved-example.json --slot morning --require-approved
-      - run: dbp-design build --input content/examples/approved-example.json --out dist/approved-example
-      - run: |
+      - name: Content pipeline smoke test
+        run: |
+          set -euo pipefail
+          python scripts/validate_content.py \
+            --file content/examples/approved-example.json \
+            --slot morning \
+            --require-approved
+          dbp-design build \
+            --input content/examples/approved-example.json \
+            --out dist/approved-example
           python scripts/publish_telegram.py \
             --content content/examples/approved-example.json \
             --slot morning \
@@ -53,6 +107,15 @@ jobs:
             --state-dir dist/test-state \
             --archive-dir dist/test-archive \
             --dry-run true
+
+      - name: Upload pytest log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pytest-log-py${{ matrix.python-version }}
+          if-no-files-found: ignore
+          path: pytest.log
+          retention-days: 7
 
       - if: matrix.python-version == '3.12'
         uses: actions/upload-artifact@v7

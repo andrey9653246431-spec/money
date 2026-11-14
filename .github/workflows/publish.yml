@@ -108,7 +108,36 @@ jobs:
             --library content/generator/library.json \
             --output "$CONTENT_FILE"
 
+      - name: Check slot exists in JSON
+        id: slot
+        env:
+          CONTENT_FILE: content/approved/${{ steps.context.outputs.date }}.json
+          SLOT: ${{ steps.context.outputs.slot }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$CONTENT_FILE" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if python - "$CONTENT_FILE" "$SLOT" <<'PY'
+          import json
+          import sys
+          posts = json.load(open(sys.argv[1], encoding="utf-8")).get("posts", [])
+          raise SystemExit(0 if any(p.get("slot") == sys.argv[2] for p in posts) else 1)
+          PY
+          then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+              echo "::error::В $CONTENT_FILE нет поста слота $SLOT — публиковать нечего."
+              exit 1
+            fi
+            echo "::notice::В $CONTENT_FILE нет поста слота $SLOT — слот пропущен. Это нормально, если промо-постов на эту дату нет."
+          fi
+
       - name: Validate approved JSON
+        if: steps.slot.outputs.present == 'true'
         run: |
           python scripts/validate_content.py \
             --file "content/approved/${{ steps.context.outputs.date }}.json" \
@@ -116,12 +145,14 @@ jobs:
             --require-approved
 
       - name: Render cards
+        if: steps.slot.outputs.present == 'true'
         run: |
           dbp-design build \
             --input "content/approved/${{ steps.context.outputs.date }}.json" \
             --out "dist/${{ steps.context.outputs.date }}"
 
       - name: Publish one slot or dry-run
+        if: steps.slot.outputs.present == 'true'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -137,7 +168,7 @@ jobs:
             --dry-run "$DRY_RUN"
 
       - name: Commit publication state
-        if: success() && (github.event_name == 'schedule' || inputs.dry_run == false)
+        if: success() && steps.slot.outputs.present == 'true' && (github.event_name == 'schedule' || inputs.dry_run == false)
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
