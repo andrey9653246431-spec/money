@@ -10,18 +10,27 @@ on:
         default: 50
   schedule:
     # Бот работает сессиями: каждый час запускается и живёт ~50 минут.
-    - cron: "0 * * * *"
+    # Минута 7, а не 0: в начале часа у GitHub пик нагрузки, запуски
+    # задерживаются на десятки минут и часть ставится в очередь.
+    - cron: "7 * * * *"
 
 permissions:
   contents: write
 
 concurrency:
   group: price-bot
+  # Сессия не должна обрываться на середине: незавершённая сессия теряет
+  # offset и приводит к повторной обработке апдейтов.
   cancel-in-progress: false
+
+env:
+  # Логи сессии должны появляться в Actions по ходу работы, а не в конце.
+  PYTHONUNBUFFERED: "1"
 
 jobs:
   bot:
-    # Scheduled sessions stay off until the repository variable is explicitly enabled.
+    # Сессии по расписанию включаются только явной переменной репозитория:
+    # Settings → Secrets and variables → Actions → Variables → PRICE_BOT_ENABLED=true
     if: github.event_name == 'workflow_dispatch' || vars.PRICE_BOT_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 65
@@ -35,6 +44,43 @@ jobs:
 
       - run: python -m pip install --upgrade pip
       - run: pip install -r price_bot/requirements.txt
+
+      - name: Check secrets
+        env:
+          BOT_STATE_KEY: ${{ secrets.BOT_STATE_KEY }}
+          PRICE_BOT_TOKEN: ${{ secrets.PRICE_BOT_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Без ключа состояние нельзя сохранить зашифрованным — не запускаем бота.
+          if [ -z "${BOT_STATE_KEY}" ]; then
+            echo "::error::Secret BOT_STATE_KEY не задан. Бот не запущен, чтобы не хранить данные открыто."
+            exit 1
+          fi
+          # Падать сразу, а не после 50 минут пустой сессии.
+          if [ -z "${PRICE_BOT_TOKEN}" ] && [ -z "${TELEGRAM_BOT_TOKEN}" ]; then
+            echo "::error::Нет ни PRICE_BOT_TOKEN, ни TELEGRAM_BOT_TOKEN — боту нечем работать."
+            exit 1
+          fi
+
+      - name: Restore encrypted bot state
+        env:
+          BOT_STATE_KEY: ${{ secrets.BOT_STATE_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p state/bot
+          if [ ! -f state/bot/state.enc ]; then
+            echo "Зашифрованного состояния пока нет — стартуем с пустого."
+            exit 0
+          fi
+          if ! openssl enc -d -aes-256-cbc -pbkdf2 -pass env:BOT_STATE_KEY \
+              -in state/bot/state.enc | tar -xzf - -C state/bot; then
+            echo "::error::Не удалось расшифровать state/bot/state.enc. Проверьте, что секрет BOT_STATE_KEY тот же, которым состояние шифровалось."
+            exit 1
+          fi
+          echo "Состояние восстановлено из state/bot/state.enc"
+          ls -la state/bot
 
       - name: Run bot session
         env:
@@ -51,15 +97,60 @@ jobs:
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
         run: python -m price_bot.bot
 
-      - name: Commit bot state
+      - name: Encrypt bot state and remove plaintext
+        if: always()
+        env:
+          BOT_STATE_KEY: ${{ secrets.BOT_STATE_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          shopt -s nullglob
+          rm -f state/bot/*.tmp
+          files=(state/bot/*.json)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "Нет файлов состояния для шифрования"
+          elif [ -z "${BOT_STATE_KEY:-}" ]; then
+            # Без ключа шифровать нечем: удаляем открытые файлы, чтобы они
+            # не уехали в commit, но и не оставляем их в рабочем каталоге.
+            echo "::warning::BOT_STATE_KEY пуст — состояние не сохранено"
+            rm -f state/bot/*.json
+          else
+            tar -czf - -C state/bot $(for f in "${files[@]}"; do basename "$f"; done) \
+              | openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:BOT_STATE_KEY \
+                -out state/bot/state.enc.tmp
+            mv -f state/bot/state.enc.tmp state/bot/state.enc
+            echo "Состояние зашифровано: state/bot/state.enc"
+          fi
+          rm -f state/bot/*.json
+
+      - name: Commit encrypted bot state
         if: always()
         run: |
+          set -euo pipefail
+          if [ ! -f state/bot/state.enc ]; then
+            echo "state/bot/state.enc нет — коммитить нечего"
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add state/bot
+          # Открытые JSON больше не отслеживаются: удаляем их из индекса, если были закоммичены раньше.
+          git rm --cached --ignore-unmatch -q state/bot/*.json || true
+          git add state/bot/state.enc
           if git diff --cached --quiet; then
             echo "No state changes"
-          else
-            git commit -m "[skip ci] Price bot state"
-            git push || (git pull --rebase origin main && git push)
+            exit 0
           fi
+          git commit -m "[skip ci] Price bot encrypted state"
+          # В main одновременно пишут публикаторы Telegram и MAX, поэтому
+          # push может упасть на рассинхроне. Три попытки с rebase.
+          for attempt in 1 2 3; do
+            if git push; then
+              echo "Состояние отправлено в main (попытка $attempt)"
+              exit 0
+            fi
+            echo "::warning::push не прошёл (попытка $attempt), подтягиваю main"
+            git pull --rebase --autostash origin main || true
+            sleep $((attempt * 5))
+          done
+          echo "::error::Не удалось отправить состояние в main после трёх попыток"
+          exit 1

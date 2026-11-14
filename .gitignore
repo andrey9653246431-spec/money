@@ -11,3 +11,5 @@ build/
 
 # Состояние бота: открытые JSON не коммитим, в git — только state/bot/state.enc
 state/bot/*.json
+state/bot/*.tmp
+state/bot/*.enc.tmp

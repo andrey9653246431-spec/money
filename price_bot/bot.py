@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import signal
 import time
 from datetime import datetime
 from pathlib import Path
@@ -583,8 +584,24 @@ class PriceBot:
             return 2
         deadline = time.monotonic() + max(1, self.config.session_minutes) * 60
         offset = self.offsets.get()
+
+        # Отменённый workflow присылает SIGTERM: выходим из цикла штатно,
+        # чтобы offset успел лечь в state/bot/ и апдейты не обработались дважды.
+        stop = {"requested": False}
+
+        def _request_stop(signum: int, _frame: object) -> None:
+            stop["requested"] = True
+            print(f"Сигнал {signum}: завершаю сессию после текущего апдейта")
+
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                signal.signal(sig, _request_stop)
+            except ValueError:
+                # Не главный поток (например, в тестах) — обходимся без сигналов.
+                pass
+
         print(f"Бот запущен на {self.config.session_minutes} мин.; offset={offset}")
-        while time.monotonic() < deadline:
+        while time.monotonic() < deadline and not stop["requested"]:
             try:
                 updates = self.api.get_updates(offset, timeout=self.config.poll_timeout)
             except RuntimeError as error:
