@@ -1,16 +1,21 @@
 name: Unpack content factory fix
 
-# Распаковывает content-factory-fix.zip в корень репозитория, применяет правки,
-# прогоняет тесты, коммитит и удаляет архив.
+# v2 — распаковка content-factory-fix.zip в корень репозитория с проверками
+# и удалением архива.
+#
+# Что изменилось против v1: проверки разбиты на отдельные шаги (ruff check,
+# ruff format, pytest), поэтому в аннотациях видно, какая именно команда
+# упала; печатаются версии Python/pip/ruff/pytest и git status до и после
+# применения; установка dev-зависимостей имеет фолбэк; добавлен вход
+# `verify`, чтобы можно было применить файлы без проверок (тогда качество
+# проверит workflow CI на новом коммите).
 #
 # Про workflow-файлы: GITHUB_TOKEN не может создавать и изменять файлы в
-# .github/workflows/. Поэтому есть два режима:
-#   * direct    — если задан секрет WORKFLOW_PAT (fine-grained token с правами
-#                 Contents: Read and write + Workflows: Read and write):
+# .github/workflows/. Два режима:
+#   * direct    — задан секрет WORKFLOW_PAT (Contents + Workflows: Read and write):
 #                 все 5 файлов workflow ставятся на место автоматически;
-#   * templates — если PAT нет: workflow-файлы кладутся в templates/github/,
-#                 а 5 файлов нужно перенести в .github/workflows/ вручную
-#                 через веб-интерфейс (список печатается в конце).
+#   * templates — PAT нет: workflow-файлы кладутся в templates/github/,
+#                 а 5 файлов переносятся в .github/workflows/ вручную.
 
 on:
   workflow_dispatch:
@@ -22,6 +27,11 @@ on:
         default: "content-factory-fix.zip"
       delete_archive:
         description: "Удалить архив из репозитория после распаковки"
+        type: boolean
+        required: false
+        default: true
+      verify:
+        description: "Прогнать ruff и pytest перед коммитом"
         type: boolean
         required: false
         default: true
@@ -40,19 +50,30 @@ jobs:
     env:
       ARCHIVE: ${{ inputs.archive || 'content-factory-fix.zip' }}
       DELETE_ARCHIVE: ${{ inputs.delete_archive == false && 'false' || 'true' }}
-      # direct — PAT есть, templates — PAT нет
+      VERIFY: ${{ inputs.verify == false && 'false' || 'true' }}
       MODE: ${{ secrets.WORKFLOW_PAT != '' && 'direct' || 'templates' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          # С PAT push workflow-файлов разрешён, без него — нет.
           token: ${{ secrets.WORKFLOW_PAT || github.token }}
 
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
+
+      - name: Show environment
+        run: |
+          set -euo pipefail
+          echo "python: $(python -V 2>&1)"
+          echo "pip:    $(python -m pip -V)"
+          echo "commit: $(git rev-parse --short HEAD)"
+          echo "mode:   $MODE | verify: $VERIFY | archive: $ARCHIVE"
+          echo "--- файлы в корне (до применения) ---"
+          ls -1
+          echo "--- git status (до применения) ---"
+          git status --short
 
       - name: Check archive exists
         run: |
@@ -61,7 +82,7 @@ jobs:
             echo "::error::Файл $ARCHIVE не найден в корне репозитория. Загрузите архив (Add file → Upload files) в корень репозитория."
             exit 1
           fi
-          echo "Архив: $ARCHIVE ($(du -h "$ARCHIVE" | cut -f1)); режим: $MODE"
+          echo "Архив: $ARCHIVE ($(du -h "$ARCHIVE" | cut -f1))"
 
       - name: Safely extract archive
         env:
@@ -90,8 +111,7 @@ jobs:
                       raise SystemExit(f"Небезопасный путь: {entry.filename}")
                   if ".git" in path.parts or path.name == ".env":
                       raise SystemExit(f"Запрещённый файл в архиве: {entry.filename}")
-                  mode = entry.external_attr >> 16
-                  if stat.S_ISLNK(mode):
+                  if stat.S_ISLNK(entry.external_attr >> 16):
                       raise SystemExit(f"Симлинки запрещены: {entry.filename}")
                   total_size += entry.file_size
                   if total_size > 20 * 1024 * 1024:
@@ -102,6 +122,7 @@ jobs:
               package.extractall(staging)
           print(f"Распаковано файлов: {len(entries)}")
           PY
+          echo "--- содержимое архива ---"
           find "$STAGING" -type f | sed "s|$STAGING/||" | sort
 
       - name: Apply files
@@ -123,33 +144,68 @@ jobs:
             for wf in "$STAGING/.github/workflows/"*.yml; do
               [ -e "$wf" ] || continue
               cp "$wf" "$GITHUB_WORKSPACE/templates/github/$(basename "$wf")"
+              echo "шаблон: templates/github/$(basename "$wf")"
               if [ "$MODE" = "direct" ]; then
                 cp "$wf" "$GITHUB_WORKSPACE/.github/workflows/$(basename "$wf")"
-                echo "Установлен workflow: .github/workflows/$(basename "$wf")"
+                echo "workflow: .github/workflows/$(basename "$wf")"
               fi
             done
           fi
 
           if [ "$MODE" != "direct" ]; then
-            echo "::warning::WORKFLOW_PAT не задан — workflow-файлы положены в templates/github/ и НЕ применены. Их нужно перенести в .github/workflows/ вручную (список ниже)."
+            echo "::warning::WORKFLOW_PAT не задан — workflow-файлы положены в templates/github/ и НЕ применены. Их нужно перенести в .github/workflows/ вручную (список в Summary)."
           fi
 
-      - name: Verify code before commit
+          echo "--- git status (после применения) ---"
+          git status --short
+
+      - name: Install dev dependencies
         run: |
           set -euo pipefail
-          # Пакет приезжает снаружи: не пушим в main, пока тесты не зелёные.
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-          ruff check .
-          ruff format --check .
-          pytest -q
+          if ! pip install -e ".[dev]"; then
+            echo "::warning::Не удалось установить extras [dev] — ставлю минимальный набор отдельно."
+            pip install -e .
+            pip install "ruff>=0.8,<1" "pytest>=8,<10"
+          fi
+          echo "--- установлено ---"
+          pip list 2>/dev/null | grep -Ei "^(pillow|pytest|ruff|dbp-design-factory) " || true
+          echo "ruff:  $(ruff --version 2>&1 || echo 'нет')"
+          echo "pytest:$(python -m pytest --version 2>&1 || echo 'нет')"
+
+      - name: Lint (ruff check)
+        if: env.VERIFY == 'true'
+        run: |
+          set -euo pipefail
+          ruff check . || {
+            echo "::error::ruff check нашёл замечания — смотрите вывод выше."
+            exit 1
+          }
+
+      - name: Format check (ruff format --check)
+        if: env.VERIFY == 'true'
+        run: |
+          set -euo pipefail
+          ruff format --check . || {
+            echo "::error::ruff format --check: файлы не отформатированы — смотрите список выше."
+            exit 1
+          }
+
+      - name: Tests (pytest)
+        if: env.VERIFY == 'true'
+        run: |
+          set -euo pipefail
+          python -m pytest -q --maxfail=1 -ra || {
+            echo "::error::pytest упал — смотрите вывод выше."
+            exit 1
+          }
 
       - name: Remove archive
         if: env.DELETE_ARCHIVE == 'true'
         run: |
           set -euo pipefail
           rm -f "$ARCHIVE"
-          echo "Архив $ARCHIVE удалён из рабочей копии и будет удалён из репозитория коммитом"
+          echo "Архив $ARCHIVE удалён из рабочей копии и будет удалён коммитом"
 
       - name: Commit and push
         run: |
@@ -161,6 +217,8 @@ jobs:
             echo "Нет изменений для commit"
             exit 0
           fi
+          echo "--- изменения в коммите ---"
+          git diff --cached --stat
           git commit -m "Apply content factory fix (reliability, CI, publish guards)"
           for attempt in 1 2 3; do
             if git push; then
@@ -183,7 +241,8 @@ jobs:
             echo
             echo "- архив: \`$ARCHIVE\`"
             echo "- режим: **$MODE**"
-            echo "- архив удалён из репозитория: **$DELETE_ARCHIVE**"
+            echo "- проверки перед коммитом: **$VERIFY**"
+            echo "- удалить архив: **$DELETE_ARCHIVE**"
             echo
             if [ "$MODE" = "direct" ]; then
               echo "Все 5 файлов workflow установлены в \`.github/workflows/\`."
@@ -194,11 +253,11 @@ jobs:
               echo "Перенесите их в \`.github/workflows/\` через веб-интерфейс (Edit → вставить содержимое из шаблона):"
               echo
               echo '```text'
-              echo "templates/github/price-bot.yml     → .github/workflows/price-bot.yml"
-              echo "templates/github/publish.yml       → .github/workflows/publish.yml"
-              echo "templates/github/publish-max.yml   → .github/workflows/publish-max.yml"
+              echo "templates/github/price-bot.yml      → .github/workflows/price-bot.yml"
+              echo "templates/github/publish.yml        → .github/workflows/publish.yml"
+              echo "templates/github/publish-max.yml    → .github/workflows/publish-max.yml"
               echo "templates/github/unpack-updates.yml → .github/workflows/unpack-updates.yml"
-              echo "templates/github/ci.yml            → .github/workflows/ci.yml  (новый файл)"
+              echo "templates/github/ci.yml             → .github/workflows/ci.yml  (новый файл)"
               echo '```'
               echo
               echo "Либо добавьте секрет \`WORKFLOW_PAT\` и запустите этот workflow повторно — тогда всё встанет само."
