@@ -17,7 +17,13 @@ on:
         type: boolean
         required: true
         default: true
+      allow_generate:
+        description: "Сгенерировать JSON, если файла нет (иначе — упасть)"
+        type: boolean
+        required: false
+        default: true
   schedule:
+    # Минута 3 — рядом с публикацией MAX (минута 8), но не в начале часа.
     - cron: "3 9 * * *"
       timezone: "Europe/Moscow"
     - cron: "3 13 * * *"
@@ -36,9 +42,11 @@ concurrency:
 
 jobs:
   publish:
-    # Scheduled publishing stays off until the repository variable is explicitly enabled.
+    # Публикация по расписанию включается переменной репозитория:
+    # Settings → Secrets and variables → Actions → Variables → PUBLISHING_ENABLED=true
     if: github.event_name == 'workflow_dispatch' || vars.PUBLISHING_ENABLED == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
 
@@ -61,11 +69,16 @@ jobs:
             "3 20 * * *") SLOT=evening ;;
             "3 12 * * *") SLOT=promo ;;
             manual) SLOT="$MANUAL_SLOT" ;;
-            *) echo "Unknown schedule: $EVENT_SCHEDULE"; exit 1 ;;
+            *) echo "::error::Unknown schedule: $EVENT_SCHEDULE"; exit 1 ;;
           esac
           DATE="${MANUAL_DATE:-$(TZ=Europe/Moscow date +%F)}"
-          case "$SLOT" in morning|day|evening|promo) ;; *) echo "Bad slot"; exit 1 ;; esac
-          test -n "$DATE"
+          case "$SLOT" in morning|day|evening|promo) ;; *) echo "::error::Bad slot: $SLOT"; exit 1 ;; esac
+          # Строгий формат даты: значение уходит в путь файла и в аргументы
+          # команд, поэтому всё, кроме ГГГГ-ММ-ДД, отклоняем.
+          if ! printf '%s' "$DATE" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'; then
+            echo "::error::Дата должна быть в формате ГГГГ-ММ-ДД, получено: $DATE"
+            exit 1
+          fi
           echo "slot=$SLOT" >> "$GITHUB_OUTPUT"
           echo "date=$DATE" >> "$GITHUB_OUTPUT"
 
@@ -76,16 +89,24 @@ jobs:
         env:
           CONTENT_FILE: content/approved/${{ steps.context.outputs.date }}.json
           CONTENT_DATE: ${{ steps.context.outputs.date }}
+          # По расписанию генерация разрешена (как и раньше), вручную можно
+          # потребовать заранее вычитанный файл: allow_generate=false.
+          ALLOW_GENERATE: ${{ (github.event_name == 'workflow_dispatch' && inputs.allow_generate == false) && 'false' || 'true' }}
         run: |
           set -euo pipefail
           if [ -f "$CONTENT_FILE" ]; then
             echo "Используем существующий редакционный файл: $CONTENT_FILE"
-          else
-            python scripts/generate_content.py \
-              --date "$CONTENT_DATE" \
-              --library content/generator/library.json \
-              --output "$CONTENT_FILE"
+            exit 0
           fi
+          if [ "${ALLOW_GENERATE}" != "true" ]; then
+            echo "::error::Нет $CONTENT_FILE, а автогенерация запрещена (allow_generate=false). Положите проверенный JSON в content/approved/."
+            exit 1
+          fi
+          echo "::warning::Файла $CONTENT_FILE нет — контент сгенерирован генератором без ручной вычитки и будет опубликован."
+          python scripts/generate_content.py \
+            --date "$CONTENT_DATE" \
+            --library content/generator/library.json \
+            --output "$CONTENT_FILE"
 
       - name: Validate approved JSON
         run: |
@@ -104,7 +125,8 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          DRY_RUN: ${{ inputs.dry_run || false }}
+          # По расписанию и по умолчанию — реальная отправка; dry_run=true только вручную.
+          DRY_RUN: ${{ inputs.dry_run == true }}
         run: |
           python scripts/publish_telegram.py \
             --content "content/approved/${{ steps.context.outputs.date }}.json" \
@@ -117,22 +139,37 @@ jobs:
       - name: Commit publication state
         if: success() && (github.event_name == 'schedule' || inputs.dry_run == false)
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add state/telegram content/published \
-            "content/approved/${{ steps.context.outputs.date }}.json"
+          git add state/telegram content/published
+          # Файл мог быть сгенерирован на шаге выше — добавляем, если он есть.
+          if [ -f "content/approved/${{ steps.context.outputs.date }}.json" ]; then
+            git add "content/approved/${{ steps.context.outputs.date }}.json"
+          fi
           if git diff --cached --quiet; then
             echo "No state changes"
-          else
-            git commit -m "[skip ci] Publish ${{ steps.context.outputs.date }} ${{ steps.context.outputs.slot }}"
-            git push
+            exit 0
           fi
+          git commit -m "[skip ci] Publish ${{ steps.context.outputs.date }} ${{ steps.context.outputs.slot }}"
+          # Параллельно в main пишут MAX-публикатор и бот сравнения цен.
+          for attempt in 1 2 3; do
+            if git push; then
+              exit 0
+            fi
+            echo "::warning::push не прошёл (попытка $attempt), подтягиваю main"
+            git pull --rebase --autostash origin main || true
+            sleep $((attempt * 5))
+          done
+          echo "::error::Не удалось отправить состояние публикации в main"
+          exit 1
 
       - name: Keep audit artifacts
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: telegram-${{ steps.context.outputs.date }}-${{ steps.context.outputs.slot }}
+          if-no-files-found: ignore
           path: |
             dist/${{ steps.context.outputs.date }}/
             state/telegram/
