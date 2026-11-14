@@ -8,3 +8,6 @@ dist/
 build/
 *.egg-info/
 .DS_Store
+
+# Состояние бота: открытые JSON не коммитим, в git — только state/bot/state.enc
+state/bot/*.json
