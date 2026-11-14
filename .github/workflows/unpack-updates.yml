@@ -1,4 +1,4 @@
-name: Unpack price-bot and MAX updates
+name: Unpack money updates
 
 on:
   workflow_dispatch:
@@ -28,7 +28,7 @@ jobs:
           from pathlib import Path
 
           staging_root = Path(os.environ["STAGING_ROOT"])
-          for archive_name in ("price-bot-update.zip", "max-update.zip"):
+          for archive_name in ("price-bot-update.zip", "max-update.zip", "promo-rubrics-update.zip", "bot-update-pharmacy-supplements.zip"):
               archive = Path(archive_name)
               if not archive.exists():
                   print(f"Пропуск: {archive_name} нет в репозитории")
@@ -96,10 +96,14 @@ jobs:
           }
           copy_archive "price-bot-update" "price_bot/bot.py"
           copy_archive "max-update" "scripts/publish_max.py"
+          copy_archive "promo-rubrics-update" "scripts/generate_content.py"
+          copy_archive "bot-update-pharmacy-supplements" "price_bot/supplements.py"
           test -f price_bot/bot.py || { echo "price_bot/bot.py не установлен"; exit 1; }
           test -f scripts/publish_max.py || { echo "scripts/publish_max.py не установлен"; exit 1; }
           test -f templates/github/price-bot.yml
           test -f templates/github/publish-max.yml
+          test -f content/generator/library.json
+          test -f price_bot/pharmacy.py
           echo "Распаковка завершена."
 
       - name: Commit unpacked files
@@ -112,7 +116,7 @@ jobs:
             echo "Нет изменений для commit"
             exit 0
           fi
-          git commit -m "Unpack price-bot and MAX updates"
+          git commit -m "Unpack money updates"
           git push || {
             echo "Не удалось отправить commit в main."
             echo "Проверьте Settings → Actions → General → Workflow permissions → Read and write permissions."
